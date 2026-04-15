@@ -62,13 +62,18 @@
       background: white; opacity: 0; pointer-events: none; z-index: 10;
       transition: opacity 0.1s ease;
     }
+    @keyframes pulse {
+      0% { transform: scale(1); text-shadow: 0 0 20px var(--neon-cyan); }
+      50% { transform: scale(1.1); text-shadow: 0 0 40px var(--neon-magenta), 0 0 60px var(--neon-magenta); }
+      100% { transform: scale(1); text-shadow: 0 0 20px var(--neon-cyan); }
+    }
   </style>
 </head>
 <body>
 <div id="gameContainer">
   <div id="ui">
     <div>SCORE: <span id="scoreVal">0</span></div>
-    <div>TARGETS: <span id="targetVal">9</span></div>
+    <div style="position:absolute; left:15px; top:50px;">TARGETS: <span id="targetVal">9</span></div>
   </div>
   
   <div id="crosshair"></div>
@@ -83,6 +88,11 @@
     <p>A completely logical 2D framework projected into 3D using Raycasting.</p>
     <p><b>WASD</b> to move. <b>Mouse</b> to Look around seamlessly. <b>Click</b> to blast targets.</p>
     <p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO ACQUIRE POINTER LOCK</p>
+    <div id="levelSelect" style="margin-top:20px; display:flex; gap:10px;">
+      <button onclick="event.stopPropagation(); loadLevel(0);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 1</button>
+      <button onclick="event.stopPropagation(); loadLevel(1);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 2</button>
+      <button onclick="event.stopPropagation(); loadLevel(2);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 3</button>
+    </div>
   </div>
 </div>
 
@@ -143,7 +153,7 @@
       targets: [
         {x: 8.5, y: 2.5, active: true}, {x: 14.5, y: 5.5, active: true},
         {x: 3.5, y: 9.5, active: true}, {x: 21.5, y: 11.5, active: true},
-        {x: 1.5, y: 11.5, active: true}, {x: 18.5, y: 4.5, active: true},
+        {x: 1.5, y: 11.5, active: true}, {x: 7.5, y: 4.5, active: true},
         {x: 11.5, y: 18.5, active: true}, {x: 20.5, y: 21.5, active: true},
         {x: 5.5, y: 18.5, active: true}
       ]
@@ -169,7 +179,7 @@
       targets: [
         {x: 1.5, y: 11.5, active: true}, {x: 13.5, y: 1.5, active: true},
         {x: 13.5, y: 11.5, active: true}, {x: 7.5, y: 7.5, active: true},
-        {x: 5.5, y: 3.5, active: true}, {x: 11.5, y: 5.5, active: true}
+        {x: 3.5, y: 3.5, active: true}, {x: 7.5, y: 3.5, active: true}
       ]
     },
     {
@@ -195,10 +205,10 @@
       ],
       spawn: { x: 9.5, y: 8.5, dirX: 1, dirY: 0, planeX: 0, planeY: 0.66 },
       targets: [
-        {x: 1.5, y: 1.5, active: true}, {x: 17.5, y: 1.5, active: true},
-        {x: 1.5, y: 15.5, active: true}, {x: 17.5, y: 15.5, active: true},
-        {x: 9.5, y: 3.5, active: true}, {x: 9.5, y: 13.5, active: true},
-        {x: 4.5, y: 8.5, active: true}, {x: 14.5, y: 8.5, active: true}
+        {x: 1.5, y: 2.5, active: true}, {x: 10.5, y: 1.5, active: true},
+        {x: 2.5, y: 13.5, active: true}, {x: 17.5, y: 15.5, active: true},
+        {x: 9.5, y: 7.5, active: true}, {x: 9.5, y: 10.5, active: true},
+        {x: 4.5, y: 5.5, active: true}, {x: 14.5, y: 5.5, active: true}
       ]
     }
   ];
@@ -356,7 +366,7 @@
                                   const overlay = document.getElementById('startOverlay');
                                   if(overlay) {
                                       overlay.style.display = 'flex';
-                                      overlay.innerHTML = '<h1>YOU WIN!</h1><p>You cleared all the neon sectors.</p><p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO RESTART LEVEL 1</p>';
+                                      overlay.innerHTML = '<h1 style="font-size:64px; animation: pulse 1s infinite;">YOU WIN!</h1><p style="font-size:28px; color:var(--neon-cyan);">CONGRATULATIONS!</p><p style="font-size:20px;">You cleared all the neon sectors!</p><p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO RESTART LEVEL 1</p><div id="levelSelect" style="margin-top:20px; display:flex; gap:10px;"><button onclick="event.stopPropagation(); loadLevel(0);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 1</button><button onclick="event.stopPropagation(); loadLevel(1);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 2</button><button onclick="event.stopPropagation(); loadLevel(2);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 3</button></div>';
                                   }
                                   loadLevel(0);
                                   score = 0;
