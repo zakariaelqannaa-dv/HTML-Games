@@ -58,3 +58,4 @@ No build processes, no npm installs, no bundlers. Pure vanilla web development.
 ## 🤝 Contributing
 Contributions, issues, and feature requests are welcome! 
 Feel free to start extending the Raycaster engine, refine the graphics, or propose a brand new glowing mini-game for the collection.
+Made by Zakaria El Qannaa-dev
