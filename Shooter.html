@@ -24,13 +24,9 @@
       border-radius: 8px;
       overflow: hidden;
     }
-    /* We render at 320x240 and stretch strictly for that crunchy Doom/Retro aesthetic */
+    /* High resolution rendering for smooth vector-like walls */
     canvas {
       display: block; width: 100%; height: 100%;
-      image-rendering: -moz-crisp-edges;
-      image-rendering: -webkit-optimize-contrast;
-      image-rendering: crisp-edges;
-      image-rendering: pixelated;
     }
     #ui {
       position: absolute; top: 10px; left: 15px; right: 15px;
@@ -78,8 +74,8 @@
   <div id="crosshair"></div>
   <div id="screenFlash" class="flash"></div>
 
-  <!-- Hidden lower resolution canvas scales up artificially to preserve classic FPS pixel-style rendering -->
-  <canvas id="gameCanvas" width="320" height="240"></canvas>
+  <!-- High Resolution for smooth walls -->
+  <canvas id="gameCanvas" width="1024" height="768"></canvas>
   
   <!-- Start Screen to capture PointerLock smoothly -->
   <div id="startOverlay" class="overlay">
@@ -107,55 +103,126 @@
   let ZBuffer = new Float32Array(screenWidth); // Z-buffer array strictly for 1D sprite occlusion
   let flashTimeout;
   
-  // Define our literally expanded 24x24 game map!
-  const mapWidth = 24;
-  const mapHeight = 24;
-  const worldMap = [
-    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
-    [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,1,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0,1],
-    [1,0,0,2,2,0,1,0,0,0,0,0,3,0,0,0,1,1,1,1,1,0,0,1],
-    [1,0,0,2,0,0,0,0,0,0,0,0,3,0,0,0,1,0,0,0,1,0,0,1],
-    [1,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1,0,0,0,1,0,0,1],
-    [1,1,1,0,0,0,0,0,1,1,1,1,1,0,0,0,1,0,0,0,1,0,0,1],
-    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,1,0,0,1],
-    [1,0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,1,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,1,1,1,1,1,0,0,1],
-    [1,0,3,3,0,0,1,1,1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
-    [1,0,0,1,1,1,1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,2,2,2,2,2,2,1],
-    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
-    [1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
-    [1,0,0,0,1,0,0,0,1,0,0,0,1,1,1,1,0,0,0,0,0,0,0,1],
-    [1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,0,2,2,0,0,0,1],
-    [1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,0,2,2,0,0,0,1],
-    [1,0,0,0,0,0,0,0,1,0,0,1,1,0,0,1,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,0,0,1,0,0,1,1,0,0,1,0,0,0,0,0,0,0,1],
-    [1,1,1,1,1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,1],
-    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+  let currentLevelIndex = 0;
+  let mapWidth = 0;
+  let mapHeight = 0;
+  let worldMap = [];
+  let player = { x: 0, y: 0, dirX: 0, dirY: 0, planeX: 0, planeY: 0 };
+  let targets = [];
+
+  const levels = [
+    {
+      // Level 1: The original maze
+      map: [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,1,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,2,2,0,1,0,0,0,0,0,3,0,0,0,1,1,1,1,1,0,0,1],
+        [1,0,0,2,0,0,0,0,0,0,0,0,3,0,0,0,1,0,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1,0,0,0,1,0,0,1],
+        [1,1,1,0,0,0,0,0,1,1,1,1,1,0,0,0,1,0,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,1,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,1,1,1,1,1,0,0,1],
+        [1,0,3,3,0,0,1,1,1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
+        [1,0,0,1,1,1,1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,2,2,2,2,2,2,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,1,0,0,0,1,0,0,0,1,1,1,1,0,0,0,0,0,0,0,1],
+        [1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,0,2,2,0,0,0,1],
+        [1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,0,2,2,0,0,0,1],
+        [1,0,0,0,0,0,0,0,1,0,0,1,1,0,0,1,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,1,0,0,1,1,0,0,1,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+      ],
+      spawn: { x: 2.5, y: 2.5, dirX: 1, dirY: 0, planeX: 0, planeY: 0.66 },
+      targets: [
+        {x: 8.5, y: 2.5, active: true}, {x: 14.5, y: 5.5, active: true},
+        {x: 3.5, y: 9.5, active: true}, {x: 21.5, y: 11.5, active: true},
+        {x: 1.5, y: 11.5, active: true}, {x: 18.5, y: 4.5, active: true},
+        {x: 11.5, y: 18.5, active: true}, {x: 20.5, y: 21.5, active: true},
+        {x: 5.5, y: 18.5, active: true}
+      ]
+    },
+    {
+      // Level 2: Corridors
+      map: [
+        [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],
+        [2,0,0,0,2,0,0,0,0,0,3,0,0,0,2],
+        [2,0,2,0,2,0,2,2,2,0,3,0,2,0,2],
+        [2,0,2,0,0,0,0,0,2,0,0,0,2,0,2],
+        [2,0,2,2,2,2,2,0,2,2,2,2,2,0,2],
+        [2,0,0,0,0,0,2,0,2,0,0,0,0,0,2],
+        [2,2,2,2,2,0,2,0,2,0,2,2,2,2,2],
+        [2,0,0,0,0,0,0,0,0,0,0,0,0,0,2],
+        [2,0,2,2,2,2,1,1,1,2,2,2,2,0,2],
+        [2,0,2,0,0,0,0,0,0,0,0,0,2,0,2],
+        [2,0,1,0,1,1,1,0,1,1,1,0,1,0,2],
+        [2,0,0,0,1,0,0,0,0,0,1,0,0,0,2],
+        [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]
+      ],
+      spawn: { x: 1.5, y: 1.5, dirX: 0, dirY: 1, planeX: -0.66, planeY: 0 },
+      targets: [
+        {x: 1.5, y: 11.5, active: true}, {x: 13.5, y: 1.5, active: true},
+        {x: 13.5, y: 11.5, active: true}, {x: 7.5, y: 7.5, active: true},
+        {x: 5.5, y: 3.5, active: true}, {x: 11.5, y: 5.5, active: true}
+      ]
+    },
+    {
+      // Level 3: Arena
+      map: [
+        [3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],
+        [3,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,3],
+        [3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],
+        [3,0,0,1,1,0,0,0,0,2,0,0,0,0,1,1,0,0,3],
+        [3,0,0,1,1,0,0,0,0,2,0,0,0,0,1,1,0,0,3],
+        [3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],
+        [3,0,0,0,0,0,0,2,2,0,2,2,0,0,0,0,0,0,3],
+        [3,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,3],
+        [3,3,0,2,2,0,0,2,0,0,0,2,0,0,2,2,0,3,3],
+        [3,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,3],
+        [3,0,0,0,0,0,0,2,2,0,2,2,0,0,0,0,0,0,3],
+        [3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],
+        [3,0,0,1,1,0,0,0,0,2,0,0,0,0,1,1,0,0,3],
+        [3,0,0,1,1,0,0,0,0,2,0,0,0,0,1,1,0,0,3],
+        [3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],
+        [3,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,3],
+        [3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]
+      ],
+      spawn: { x: 9.5, y: 8.5, dirX: 1, dirY: 0, planeX: 0, planeY: 0.66 },
+      targets: [
+        {x: 1.5, y: 1.5, active: true}, {x: 17.5, y: 1.5, active: true},
+        {x: 1.5, y: 15.5, active: true}, {x: 17.5, y: 15.5, active: true},
+        {x: 9.5, y: 3.5, active: true}, {x: 9.5, y: 13.5, active: true},
+        {x: 4.5, y: 8.5, active: true}, {x: 14.5, y: 8.5, active: true}
+      ]
+    }
   ];
 
-  // Player Entity Vectors initialized strictly in the 2D grid
-  const player = {
-    x: 2.5, y: 2.5,  // Top Left starting zone
-    dirX: 1, dirY: 0, // Facing East initially
-    planeX: 0, planeY: 0.66, // 66% FOV camera plane
-  };
+  function loadLevel(index) {
+     currentLevelIndex = index;
+     let lvl = levels[currentLevelIndex];
+     worldMap = JSON.parse(JSON.stringify(lvl.map));
+     mapHeight = worldMap.length;
+     mapWidth = worldMap[0].length;
+     player = JSON.parse(JSON.stringify(lvl.spawn));
+     targets = JSON.parse(JSON.stringify(lvl.targets));
+     
+     let targetNode = document.getElementById('targetVal');
+     if(targetNode) targetNode.innerText = targets.length.toString();
+     
+     let title = document.querySelector('#startOverlay h1');
+     if(title) {
+        title.innerText = "LEVEL " + (index + 1);
+     }
+  }
 
-  // Sprites (Targets to shoot)
-  let targets = [
-    {x: 8.5, y: 2.5, active: true},
-    {x: 14.5, y: 5.5, active: true},
-    {x: 3.5, y: 9.5, active: true},
-    {x: 21.5, y: 11.5, active: true},
-    {x: 1.5, y: 11.5, active: true},
-    {x: 18.5, y: 4.5, active: true},
-    {x: 11.5, y: 18.5, active: true},
-    {x: 20.5, y: 21.5, active: true},
-    {x: 5.5, y: 18.5, active: true},
-  ];
+  // Initial load
+  loadLevel(currentLevelIndex);
 
   // Input State Map
   const keys = {};
@@ -174,7 +241,7 @@
       const title = startOverlay.querySelector('h1');
       if (document.pointerLockElement === canvas) {
           if (startOverlay) startOverlay.style.display = 'none';
-          if (title) title.innerText = "NEON ASSAULT";
+          if (title && title.innerText !== "YOU WIN!") title.innerText = "LEVEL " + (currentLevelIndex + 1);
           if(!isPlaying) {
               isPlaying = true;
               lastTime = performance.now();
@@ -272,18 +339,40 @@
                       let targetNode = document.getElementById('targetVal');
                       if (targetNode) targetNode.innerText = targets.filter(t => t.active).length.toString();
                       
-                      if(targets.filter(t => t.active).length === 0) setTimeout(respawnTargets, 1000);
+                      if(targets.filter(t => t.active).length === 0) {
+                          // Level complete logic
+                          const flash = document.getElementById('screenFlash');
+                          if(flash) {
+                             flash.style.opacity = '1';
+                             flash.style.background = 'rgba(0, 255, 255, 0.4)';
+                             setTimeout(() => { flash.style.opacity = '0'; flash.style.background = 'white'; }, 1000);
+                          }
+                          setTimeout(() => {
+                              // Proceed to next level
+                              if(currentLevelIndex === levels.length - 1) {
+                                  // Win state! We will unlock cursor and show win overlay
+                                  document.exitPointerLock();
+                                  isPlaying = false;
+                                  const overlay = document.getElementById('startOverlay');
+                                  if(overlay) {
+                                      overlay.style.display = 'flex';
+                                      overlay.innerHTML = '<h1>YOU WIN!</h1><p>You cleared all the neon sectors.</p><p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO RESTART LEVEL 1</p>';
+                                  }
+                                  loadLevel(0);
+                                  score = 0;
+                                  let scoreNode = document.getElementById('scoreVal');
+                                  if (scoreNode) scoreNode.innerText = "0";
+                              } else {
+                                  loadLevel(currentLevelIndex + 1);
+                              }
+                          }, 1500);
+                      }
                       break; // Kill only the first (closest) valid target
                   }
               }
           }
       }
 
-  function respawnTargets() {
-      targets.forEach(t => t.active = true);
-      let targetNode = document.getElementById('targetVal');
-      if (targetNode) targetNode.innerText = targets.length.toString();
-  }
 
   function isWalkable(x, y, pad = 0.2) {
       return (
@@ -464,7 +553,7 @@
   }
 
   function drawMiniMap() {
-      const blockSize = 3; // 3 pixels per grid block mapping
+      const blockSize = 10; // 10 pixels per grid block mapping
       const mapPixelWidth = mapWidth * blockSize;
       const mapPixelHeight = mapHeight * blockSize;
       const padding = 10;
@@ -492,7 +581,7 @@
       for(let target of targets) {
           if(target.active) {
               ctx.beginPath();
-              ctx.arc(screenWidth - mapPixelWidth - padding + (target.x * blockSize), padding + (target.y * blockSize), 1.5, 0, 2*Math.PI);
+              ctx.arc(screenWidth - mapPixelWidth - padding + (target.x * blockSize), padding + (target.y * blockSize), 4, 0, 2*Math.PI);
               ctx.fill();
           }
       }
@@ -503,15 +592,15 @@
       
       ctx.fillStyle = "yellow";
       ctx.beginPath();
-      ctx.arc(playerPixelX, playerPixelY, 1.5, 0, 2*Math.PI);
+      ctx.arc(playerPixelX, playerPixelY, 4, 0, 2*Math.PI);
       ctx.fill();
       
       // Draw view direction line length to signify FOV facing direction
       ctx.beginPath();
       ctx.moveTo(playerPixelX, playerPixelY);
-      ctx.lineTo(playerPixelX + player.dirX * 5, playerPixelY + player.dirY * 5);
+      ctx.lineTo(playerPixelX + player.dirX * 15, playerPixelY + player.dirY * 15);
       ctx.strokeStyle = "yellow";
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 2;
       ctx.stroke();
   }
 </script>
