@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Neon FPS Raycaster</title>
+  <style>
+    :root {
+      --neon-cyan: #0ff;
+      --neon-magenta: #f0f;
+      --dark-bg: #050510;
+    }
+    body, html {
+      margin: 0; padding: 0; background-color: var(--dark-bg);
+      color: white; font-family: 'Courier New', Courier, monospace;
+      overflow: hidden; height: 100vh; display: flex;
+      justify-content: center; align-items: center;
+    }
+    #gameContainer {
+      position: relative;
+      width: 1024px; height: 768px;
+      box-shadow: 0 0 40px var(--neon-cyan), inset 0 0 20px rgba(0,255,255,0.2);
+      border: 3px solid var(--neon-cyan);
+      background-color: #000;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    /* We render at 320x240 and stretch strictly for that crunchy Doom/Retro aesthetic */
+    canvas {
+      display: block; width: 100%; height: 100%;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+    }
+    #ui {
+      position: absolute; top: 10px; left: 15px; right: 15px;
+      display: flex; justify-content: space-between;
+      font-size: 26px; font-weight: bold;
+      color: var(--neon-cyan); text-shadow: 0 0 10px var(--neon-cyan);
+      pointer-events: none; /* Let mouse clicks pass through the UI to the Canvas */
+    }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      width: 20px; height: 20px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ''; position: absolute; background: var(--neon-magenta);
+      box-shadow: 0 0 8px var(--neon-magenta);
+    }
+    #crosshair::before { top: 9px; left: 0; width: 20px; height: 2px; }
+    #crosshair::after { top: 0; left: 9px; width: 2px; height: 20px; }
+    
+    .overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(5, 5, 16, 0.85); backdrop-filter: blur(4px);
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      z-index: 20; color: white;
+      cursor: pointer;
+    }
+    h1 { color: var(--neon-cyan); text-shadow: 0 0 20px var(--neon-cyan); font-size: 48px; margin:0;}
+    p { font-size: 20px; max-width: 60%; text-align: center; line-height: 1.5; color: #aaa; }
+    .flash {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: white; opacity: 0; pointer-events: none; z-index: 10;
+      transition: opacity 0.1s ease;
+    }
+  </style>
+</head>
+<body>
+<div id="gameContainer">
+  <div id="ui">
+    <div>SCORE: <span id="scoreVal">0</span></div>
+    <div>TARGETS: <span id="targetVal">9</span></div>
+  </div>
+  
+  <div id="crosshair"></div>
+  <div id="screenFlash" class="flash"></div>
+
+  <!-- Hidden lower resolution canvas scales up artificially to preserve classic FPS pixel-style rendering -->
+  <canvas id="gameCanvas" width="320" height="240"></canvas>
+  
+  <!-- Start Screen to capture PointerLock smoothly -->
+  <div id="startOverlay" class="overlay">
+    <h1>NEON ASSAULT</h1>
+    <p>A completely logical 2D framework projected into 3D using Raycasting.</p>
+    <p><b>WASD</b> to move. <b>Mouse</b> to Look around seamlessly. <b>Click</b> to blast targets.</p>
+    <p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO ACQUIRE POINTER LOCK</p>
+  </div>
+</div>
+
+<script>
+  /** @type {HTMLCanvasElement} */
+  const canvas = (document.getElementById('gameCanvas'));
+  if (!canvas) throw new Error("Missing Canvas");
+  const ctx = canvas.getContext('2d');
+  
+  // Retro Resolution Constants
+  const screenWidth = Math.floor(canvas.width);
+  const screenHeight = Math.floor(canvas.height);
+  
+  // Game State
+  let isPlaying = false;
+  let score = 0;
+  let lastTime = 0;
+  let ZBuffer = new Float32Array(screenWidth); // Z-buffer array strictly for 1D sprite occlusion
+  let flashTimeout;
+  
+  // Define our literally expanded 24x24 game map!
+  const mapWidth = 24;
+  const mapHeight = 24;
+  const worldMap = [
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,1,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,2,2,0,1,0,0,0,0,0,3,0,0,0,1,1,1,1,1,0,0,1],
+    [1,0,0,2,0,0,0,0,0,0,0,0,3,0,0,0,1,0,0,0,1,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1,0,0,0,1,0,0,1],
+    [1,1,1,0,0,0,0,0,1,1,1,1,1,0,0,0,1,0,0,0,1,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,1,0,0,1],
+    [1,0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,1,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,1,1,1,1,1,0,0,1],
+    [1,0,3,3,0,0,1,1,1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
+    [1,0,0,1,1,1,1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,2,2,2,2,2,2,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,1,0,0,0,1,0,0,0,1,1,1,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,0,2,2,0,0,0,1],
+    [1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,0,0,2,2,0,0,0,1],
+    [1,0,0,0,0,0,0,0,1,0,0,1,1,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,1,0,0,1,1,0,0,1,0,0,0,0,0,0,0,1],
+    [1,1,1,1,1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,1],
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+  ];
+
+  // Player Entity Vectors initialized strictly in the 2D grid
+  const player = {
+    x: 2.5, y: 2.5,  // Top Left starting zone
+    dirX: 1, dirY: 0, // Facing East initially
+    planeX: 0, planeY: 0.66, // 66% FOV camera plane
+  };
+
+  // Sprites (Targets to shoot)
+  let targets = [
+    {x: 8.5, y: 2.5, active: true},
+    {x: 14.5, y: 5.5, active: true},
+    {x: 3.5, y: 9.5, active: true},
+    {x: 21.5, y: 11.5, active: true},
+    {x: 1.5, y: 11.5, active: true},
+    {x: 18.5, y: 4.5, active: true},
+    {x: 11.5, y: 18.5, active: true},
+    {x: 20.5, y: 21.5, active: true},
+    {x: 5.5, y: 18.5, active: true},
+  ];
+
+  // Input State Map
+  const keys = {};
+  window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+  window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+  
+  // Pointer Lock & Shooting Integration
+  const startOverlay = document.getElementById('startOverlay');
+  
+  startOverlay.addEventListener('click', () => {
+      canvas.requestPointerLock();
+  });
+  
+  // Whenever the OS hands over the native cursor, start loop!
+  document.addEventListener('pointerlockchange', () => {
+      const title = startOverlay.querySelector('h1');
+      if (document.pointerLockElement === canvas) {
+          if (startOverlay) startOverlay.style.display = 'none';
+          if (title) title.innerText = "NEON ASSAULT";
+          if(!isPlaying) {
+              isPlaying = true;
+              lastTime = performance.now();
+              requestAnimationFrame(gameLoop);
+          }
+      } else {
+          if (startOverlay) {
+              startOverlay.style.display = 'flex';
+              if (title) title.innerText = "PAUSED";
+          }
+          isPlaying = false;
+      }
+  });
+
+  document.addEventListener('mousemove', (e) => {
+      if(isPlaying) {
+          // Native Look rotation logic binding direct X movement to vector rotation formula
+          let rotSpeed = e.movementX * 0.003;
+          let oldDirX = player.dirX;
+          player.dirX = player.dirX * Math.cos(rotSpeed) - player.dirY * Math.sin(rotSpeed);
+          player.dirY = oldDirX * Math.sin(rotSpeed) + player.dirY * Math.cos(rotSpeed);
+          let oldPlaneX = player.planeX;
+          player.planeX = player.planeX * Math.cos(rotSpeed) - player.planeY * Math.sin(rotSpeed);
+          player.planeY = oldPlaneX * Math.sin(rotSpeed) + player.planeY * Math.cos(rotSpeed);
+      }
+  });
+  
+  document.addEventListener('mousedown', (e) => {
+      if(isPlaying && e.button === 0) {
+          shoot();
+      }
+  });
+
+  // Mathematically checks grid intersections for bullets bypassing walls
+  function hasLineOfSight(x1, y1, x2, y2) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let dist = Math.sqrt(dx*dx + dy*dy);
+    let step = 0.1;
+    let currX = x1;
+    let currY = y1;
+    for(let i=0; i<dist; i+=step) {
+       currX += (dx/dist)*step;
+       currY += (dy/dist)*step;
+       if(worldMap[Math.floor(currY)][Math.floor(currX)] !== 0) return false;
+    }
+    return true;
+  }
+
+  function shoot() {
+      // Screen Flash Effect logic to simulate gunfire
+      const flash = document.getElementById('screenFlash');
+      if (flash) {
+          flash.style.opacity = '1';
+          if (flashTimeout) clearTimeout(flashTimeout);
+          flashTimeout = setTimeout(() => flash.style.opacity = '0', 50);
+      }
+      
+      // Sort active targets by distance (closest first for hitscan)
+      let sortedTargets = targets.filter(t => t.active).map(target => {
+          return { ...target, dist: ((player.x - target.x)**2 + (player.y - target.y)**2) };
+      }).sort((a,b) => a.dist - b.dist);
+      
+      let centerScreen = Math.floor(screenWidth / 2);
+
+      for(let tObj of sortedTargets) {
+          let spriteX = tObj.x - player.x;
+          let spriteY = tObj.y - player.y;
+          
+          let invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
+          let transformX = invDet * (player.dirY * spriteX - player.dirX * spriteY);
+          let transformY = invDet * (-player.planeY * spriteX + player.planeX * spriteY);
+          
+          if(transformY > 0) { 
+              let spriteScreenX = Math.floor((screenWidth / 2) * (1 + transformX / transformY));
+              let spriteWidth = Math.abs(Math.floor(screenHeight / transformY));
+              let drawStartX = Math.floor(-spriteWidth / 2 + spriteScreenX);
+              let drawEndX = Math.floor(spriteWidth / 2 + spriteScreenX);
+              
+              // If center crosshair intersects the drawn bounds of sprite on screen window
+              if(
+                  centerScreen >= drawStartX &&
+                  centerScreen <= drawEndX &&
+                  (transformY < ZBuffer[centerScreen] || ZBuffer[centerScreen] === undefined) &&
+                  hasLineOfSight(player.x, player.y, tObj.x, tObj.y)
+              ) {
+                  let realTarget = targets.find(t => t.x === tObj.x && t.y === tObj.y);
+                  if(!realTarget) continue;
+                  realTarget.active = false;
+                  score += 100;
+                      
+                      let scoreNode = document.getElementById('scoreVal');
+                      if (scoreNode) scoreNode.innerText = score.toString();
+                      
+                      let targetNode = document.getElementById('targetVal');
+                      if (targetNode) targetNode.innerText = targets.filter(t => t.active).length.toString();
+                      
+                      if(targets.filter(t => t.active).length === 0) setTimeout(respawnTargets, 1000);
+                      break; // Kill only the first (closest) valid target
+                  }
+              }
+          }
+      }
+
+  function respawnTargets() {
+      targets.forEach(t => t.active = true);
+      let targetNode = document.getElementById('targetVal');
+      if (targetNode) targetNode.innerText = targets.length.toString();
+  }
+
+  function isWalkable(x, y, pad = 0.2) {
+      return (
+          worldMap[Math.floor(y - pad)]?.[Math.floor(x - pad)] === 0 &&
+          worldMap[Math.floor(y - pad)]?.[Math.floor(x + pad)] === 0 &&
+          worldMap[Math.floor(y + pad)]?.[Math.floor(x - pad)] === 0 &&
+          worldMap[Math.floor(y + pad)]?.[Math.floor(x + pad)] === 0
+      );
+  }
+
+  function updateInput(dt) {
+      let moveSpeed = 3.5 * dt;
+      
+      // Calculate normalized right-vector for strafing left/right accurately
+      let rightX = -player.dirY;
+      let rightY = player.dirX;
+      
+      let nextX = player.x;
+      let nextY = player.y;
+
+      // Register movements onto velocity axes (using generalized e.key codes)
+      if(keys['w'] || keys['arrowup']) { nextX += player.dirX * moveSpeed; nextY += player.dirY * moveSpeed; }
+      if(keys['s'] || keys['arrowdown']) { nextX -= player.dirX * moveSpeed; nextY -= player.dirY * moveSpeed; }
+      if(keys['a'] || keys['arrowleft']) { nextX -= rightX * moveSpeed; nextY -= rightY * moveSpeed; }
+      if(keys['d'] || keys['arrowright']) { nextX += rightX * moveSpeed; nextY += rightY * moveSpeed; }
+
+      if(isWalkable(nextX, player.y)) player.x = nextX;
+      if(isWalkable(player.x, nextY)) player.y = nextY;
+  }
+
+  function gameLoop(time) {
+      if(!isPlaying) return;
+      let dt = (time - lastTime) / 1000.0;
+      lastTime = time;
+      
+      // Update our physics and vectors
+      updateInput(dt);
+      
+      // --- Clear Screen for Ceil / Floor rendering ---
+      ctx.fillStyle = "#111111"; // Roof Gradient fake
+      ctx.fillRect(0, 0, screenWidth, screenHeight / 2);
+      ctx.fillStyle = "#030303"; // Floor
+      ctx.fillRect(0, screenHeight / 2, screenWidth, screenHeight / 2);
+
+      // --- Core Raycasting Kernel (Digital Differential Analyzer Algorithm) ---
+      for(let x = 0; x < screenWidth; x++) {
+          
+          let cameraX = 2 * x / screenWidth - 1; // x-coordinate in camera space
+          let rayDirX = player.dirX + player.planeX * cameraX; // calculate direction of this specific ray
+          let rayDirY = player.dirY + player.planeY * cameraX;
+          
+          let mapX = Math.floor(player.x);
+          let mapY = Math.floor(player.y);
+          
+          // Length of ray from one x or y-side to next x or y-side
+          let deltaDistX = Math.abs(1 / rayDirX);
+          let deltaDistY = Math.abs(1 / rayDirY);
+          let perpWallDist;
+          
+          // Calculate step and initial sideDist vectors
+          let stepX, stepY, sideDistX, sideDistY;
+          if(rayDirX < 0) {
+              stepX = -1; sideDistX = (player.x - mapX) * deltaDistX;
+          } else {
+              stepX = 1; sideDistX = (mapX + 1.0 - player.x) * deltaDistX;
+          }
+          if(rayDirY < 0) {
+              stepY = -1; sideDistY = (player.y - mapY) * deltaDistY;
+          } else {
+              stepY = 1; sideDistY = (mapY + 1.0 - player.y) * deltaDistY;
+          }
+          
+          let hit = 0;
+          let side; // tracks 0 for North/South wall hit, 1 for East/West wall hit
+          
+          // Perform DDA Step until geometric map intersection identified!
+          while(hit === 0) {
+              if(sideDistX < sideDistY) {
+                  sideDistX += deltaDistX; mapX += stepX; side = 0;
+              } else {
+                  sideDistY += deltaDistY; mapY += stepY; side = 1;
+              }
+              
+              if(mapX < 0 || mapX >= mapWidth || mapY < 0 || mapY >= mapHeight) {
+                  hit = 1; break; // Out of bounds sanity check
+              }
+              if(worldMap[mapY]?.[mapX] > 0) hit = 1;
+          }
+          
+          // Correct fisheye distortion perspective
+          if(side === 0) {
+              perpWallDist = (mapX - player.x + (1 - stepX) / 2) / rayDirX;
+          } else {
+              perpWallDist = (mapY - player.y + (1 - stepY) / 2) / rayDirY;
+          }
+          
+          ZBuffer[x] = perpWallDist; // Save 1D projection distance for sprite target occlusion checks
+          
+          // Calc geometry height parameters for screen drawing
+          let lineHeight = Math.floor(screenHeight / perpWallDist);
+          
+          let drawStart = -lineHeight / 2 + screenHeight / 2;
+          if(drawStart < 0) drawStart = 0;
+          let drawEnd = lineHeight / 2 + screenHeight / 2;
+          if(drawEnd >= screenHeight) drawEnd = screenHeight - 1;
+          
+          // Determine Wall Color based on underlying Array index
+          let wallType = 1;
+          if(mapY >= 0 && mapY < mapHeight && mapX >= 0 && mapX < mapWidth) {
+              wallType = worldMap[mapY][mapX];
+          }
+          let color = "#fff";
+          if(wallType === 1) color = "#00f3ff"; // Glowing Cyan
+          if(wallType === 2) color = "#ff073a"; // Neon Red
+          if(wallType === 3) color = "#39ff14"; // Matrix Green
+          
+          // Fake shadowing by dimming opposing compass walls slightly and adding distance fog
+          ctx.fillStyle = color;
+          ctx.globalAlpha = side === 1 ? 0.6 : 1.0; 
+          let fog = Math.max(0.1, 1.0 - (perpWallDist / 12.0));
+          ctx.globalAlpha *= fog;
+          
+          // Draw the absolute vertical column slice representing the wall segment
+          ctx.fillRect(x, Math.floor(drawStart), 1, Math.floor(drawEnd - drawStart));
+          ctx.globalAlpha = 1.0; // reset context
+      }
+
+      // --- Dynamic Sprite Rendering (Targets) ---
+      // 1. Sort targets by distance dynamically (render far to close to manage Z indexing over-draw layers)
+      let sortedTargets = targets.filter(t => t.active).map(target => {
+          return { ...target, dist: ((player.x - target.x)**2 + (player.y - target.y)**2) };
+      }).sort((a,b) => b.dist - a.dist);
+
+      for(let target of sortedTargets) {
+          let spriteX = target.x - player.x;
+          let spriteY = target.y - player.y;
+          
+          // Tricky math mapping: Inverse Camera Matrix perspective math to project to viewport
+          let invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
+          
+          let transformX = invDet * (player.dirY * spriteX - player.dirX * spriteY);
+          let transformY = invDet * (-player.planeY * spriteX + player.planeX * spriteY); // Screen depth value!
+          
+          if(transformY > 0) { // Safety check to only draw if in front of our camera plane
+              let spriteScreenX = Math.floor((screenWidth / 2) * (1 + transformX / transformY));
+              
+              let spriteHeight = Math.abs(Math.floor(screenHeight / transformY));
+              let drawStartY = Math.floor(-spriteHeight / 2 + screenHeight / 2);
+              if(drawStartY < 0) drawStartY = 0;
+              let drawEndY = Math.floor(spriteHeight / 2 + screenHeight / 2);
+              if(drawEndY >= screenHeight) drawEndY = screenHeight - 1;
+              
+              let spriteWidth = Math.abs(Math.floor(screenHeight / transformY));
+              let drawStartX = Math.floor(-spriteWidth / 2 + spriteScreenX);
+              if(drawStartX < 0) drawStartX = 0;
+              let drawEndX = Math.floor(spriteWidth / 2 + spriteScreenX);
+              if(drawEndX >= screenWidth) drawEndX = screenWidth - 1;
+              
+              let fog = Math.max(0.2, 1.0 - (transformY / 12.0));
+              ctx.globalAlpha = fog;
+              ctx.fillStyle = "#ff00ea"; // Glowing Magenta Tag
+
+              // Draw the sprite block by block (checking Z-Buffer bounds against already drawn walls)
+              for(let stripe = drawStartX; stripe < drawEndX; stripe++) {
+                  if(transformY < ZBuffer[stripe]) { // Not occluded by wall!
+                      ctx.fillRect(stripe, drawStartY, 1, drawEndY - drawStartY);
+                  }
+              }
+              ctx.globalAlpha = 1.0;
+          }
+      }
+
+      // --- Render HUD Minimap Over everything else ---
+      drawMiniMap();
+
+      // Chain continuous animation request
+      requestAnimationFrame(gameLoop);
+  }
+
+  function drawMiniMap() {
+      const blockSize = 3; // 3 pixels per grid block mapping
+      const mapPixelWidth = mapWidth * blockSize;
+      const mapPixelHeight = mapHeight * blockSize;
+      const padding = 10;
+      
+      // Draw transparent border frame background for minimap
+      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.fillRect(screenWidth - mapPixelWidth - padding - 4, padding - 4, mapPixelWidth + 8, mapPixelHeight + 8);
+      
+      // Draw Walls and map Geometry blocks linearly scaled
+      for(let y = 0; y < mapHeight; y++) {
+          for(let x = 0; x < mapWidth; x++) {
+              let wallType = worldMap[y]?.[x];
+              if(wallType > 0) {
+                  if(wallType === 1) ctx.fillStyle = "#00f3ff";
+                  else if(wallType === 2) ctx.fillStyle = "#ff073a";
+                  else if(wallType === 3) ctx.fillStyle = "#39ff14";
+                  
+                  ctx.fillRect(screenWidth - mapPixelWidth - padding + (x * blockSize), padding + (y * blockSize), blockSize, blockSize);
+              }
+          }
+      }
+      
+      // Emphasize Active Targets dynamically
+      ctx.fillStyle = "#ff00ea"; 
+      for(let target of targets) {
+          if(target.active) {
+              ctx.beginPath();
+              ctx.arc(screenWidth - mapPixelWidth - padding + (target.x * blockSize), padding + (target.y * blockSize), 1.5, 0, 2*Math.PI);
+              ctx.fill();
+          }
+      }
+      
+      // Plot Player Position & directional field of view Cone
+      let playerPixelX = screenWidth - mapPixelWidth - padding + (player.x * blockSize);
+      let playerPixelY = padding + (player.y * blockSize);
+      
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.arc(playerPixelX, playerPixelY, 1.5, 0, 2*Math.PI);
+      ctx.fill();
+      
+      // Draw view direction line length to signify FOV facing direction
+      ctx.beginPath();
+      ctx.moveTo(playerPixelX, playerPixelY);
+      ctx.lineTo(playerPixelX + player.dirX * 5, playerPixelY + player.dirY * 5);
+      ctx.strokeStyle = "yellow";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+  }
+</script>
+</body>
+</html>
