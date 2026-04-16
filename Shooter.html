@@ -17,7 +17,7 @@
     }
     #gameContainer {
       position: relative;
-      width: 1024px; height: 768px;
+      width: 1280px; height: 960px;
       box-shadow: 0 0 40px var(--neon-cyan), inset 0 0 20px rgba(0,255,255,0.2);
       border: 3px solid var(--neon-cyan);
       background-color: #000;
@@ -47,6 +47,14 @@
     }
     #crosshair::before { top: 9px; left: 0; width: 20px; height: 2px; }
     #crosshair::after { top: 0; left: 9px; width: 2px; height: 20px; }
+    
+    #hpContainer { position: absolute; bottom: 20px; left: 20px; width: 200px; height: 20px; background: rgba(0,0,0,0.6); border: 2px solid var(--neon-cyan); border-radius: 4px; }
+    #hpFill { width: 100%; height: 100%; background: #0f0; transition: width 0.2s; box-shadow: 0 0 10px #0f0; }
+    #weaponContainer { position: absolute; bottom: 20px; right: 20px; text-align: right; }
+    #weaponName { font-size: 24px; color: var(--neon-magenta); text-shadow: 0 0 10px var(--neon-magenta); font-weight: bold; }
+    #ammoDisplay { font-size: 32px; color: var(--neon-cyan); text-shadow: 0 0 10px var(--neon-cyan); margin-top: 5px; }
+    #reloadOverlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; color: var(--neon-magenta); text-shadow: 0 0 15px var(--neon-magenta); display: none; }
+    #reloadOverlay.active { display: block; animation: pulse 0.5s infinite; }
     
     .overlay {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -78,9 +86,15 @@
   
   <div id="crosshair"></div>
   <div id="screenFlash" class="flash"></div>
+  <div id="hpContainer"><div id="hpFill"></div></div>
+  <div id="weaponContainer">
+    <div id="weaponName">LASER</div>
+    <div id="ammoDisplay">∞</div>
+  </div>
+  <div id="reloadOverlay">RELOADING...</div>
 
   <!-- High Resolution for smooth walls -->
-  <canvas id="gameCanvas" width="1024" height="768"></canvas>
+  <canvas id="gameCanvas" width="1280" height="960"></canvas>
   
   <!-- Start Screen to capture PointerLock smoothly -->
   <div id="startOverlay" class="overlay">
@@ -97,10 +111,227 @@
 </div>
 
 <script>
+  // =============================================================
+  // SOUND ENGINE — Web Audio API (zero external files, pure synth)
+  // =============================================================
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let audioCtx = null;
+
+  function getAudioCtx() {
+    if (!audioCtx) audioCtx = new AudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+
+  /** Laser "pew" — quick descending frequency sweep */
+  function playShootSound(weaponName) {
+    const ac = getAudioCtx();
+    if(weaponName === 'SHOTGUN') {
+      // Shotgun - lower, longer boom
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(200, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, ac.currentTime + 0.25);
+      gain.gain.setValueAtTime(0.5, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.25);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.25);
+    } else if(weaponName === 'GRENADE') {
+      // Grenade throw - whoosh
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(300, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(50, ac.currentTime + 0.4);
+      gain.gain.setValueAtTime(0.3, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.4);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.4);
+    } else {
+      // Laser
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(900, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(80, ac.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.35, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.15);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.15);
+    }
+  }
+  
+  /** Grenade explosion */
+  function playExplosionSound() {
+    const ac = getAudioCtx();
+    const bufSize = ac.sampleRate * 0.5;
+    const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = ac.createBufferSource();
+    noise.buffer = buf;
+    const nGain = ac.createGain();
+    const filter = ac.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(800, ac.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(30, ac.currentTime + 0.5);
+    noise.connect(filter); filter.connect(nGain); nGain.connect(ac.destination);
+    nGain.gain.setValueAtTime(0.8, ac.currentTime);
+    nGain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.5);
+    noise.start(ac.currentTime);
+    noise.stop(ac.currentTime + 0.5);
+  }
+  
+  /** Player damage sound */
+  function playDamageSound() {
+    const ac = getAudioCtx();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(150, ac.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(50, ac.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.4, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.15);
+    osc.start(ac.currentTime);
+    osc.stop(ac.currentTime + 0.15);
+  }
+
+  /** Kill explosion — noise burst + low thud */
+  function playKillSound() {
+    const ac = getAudioCtx();
+    // White noise burst
+    const bufSize = ac.sampleRate * 0.3;
+    const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = ac.createBufferSource();
+    noise.buffer = buf;
+    const nGain = ac.createGain();
+    const filter = ac.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1200, ac.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(80, ac.currentTime + 0.3);
+    noise.connect(filter); filter.connect(nGain); nGain.connect(ac.destination);
+    nGain.gain.setValueAtTime(0.6, ac.currentTime);
+    nGain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.3);
+    noise.start(ac.currentTime);
+    noise.stop(ac.currentTime + 0.3);
+    // Low thud oscillator
+    const thud = ac.createOscillator();
+    const tGain = ac.createGain();
+    thud.connect(tGain); tGain.connect(ac.destination);
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(180, ac.currentTime);
+    thud.frequency.exponentialRampToValueAtTime(40, ac.currentTime + 0.25);
+    tGain.gain.setValueAtTime(0.5, ac.currentTime);
+    tGain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.25);
+    thud.start(ac.currentTime);
+    thud.stop(ac.currentTime + 0.25);
+  }
+
+  /** Level complete ascending chime */
+  function playLevelCompleteSound() {
+    const ac = getAudioCtx();
+    const notes = [523, 659, 784, 1047]; // C5 E5 G5 C6
+    notes.forEach((freq, i) => {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.type = 'triangle';
+      const t = ac.currentTime + i * 0.18;
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.4, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+      osc.start(t);
+      osc.stop(t + 0.4);
+    });
+  }
+
+  /** Leaderboard functions */
+  function getLeaderboard() {
+    try {
+      return JSON.parse(localStorage.getItem('neonAssaultLeaderboard')) || [];
+    } catch(e) { return []; }
+  }
+  
+  function saveScore(name, score) {
+    let board = getLeaderboard();
+    board.push({ name: name.substring(0, 10), score: score, date: Date.now() });
+    board.sort((a, b) => b.score - a.score);
+    board = board.slice(0, 10);
+    localStorage.setItem('neonAssaultLeaderboard', JSON.stringify(board));
+    return board;
+  }
+  
+  function getLeaderboardHTML() {
+    let board = getLeaderboard();
+    if(board.length === 0) return '<p style="color:#aaa;">No scores yet!</p>';
+    return '<table style="color:var(--neon-cyan); font-size:18px; margin-top:15px; border-collapse:collapse;"><tr><th style="text-align:left; padding:5px;">#</th><th style="text-align:left; padding:5px;">Name</th><th style="text-align:right; padding:5px;">Score</th></tr>' + 
+      board.slice(0, 5).map((e, i) => `<tr><td style="padding:5px;">${i+1}</td><td style="padding:5px;">${e.name}</td><td style="padding:5px; text-align:right;">${e.score}</td></tr>`).join('') + '</table>';
+  }
+
+  /** Ambient hum — looping low drone while playing */
+  let ambientNode = null;
+  let ambientGain = null;
+  function startAmbient() {
+    if (ambientNode) return;
+    const ac = getAudioCtx();
+    ambientNode = ac.createOscillator();
+    ambientGain = ac.createGain();
+    const lfo = ac.createOscillator();
+    const lfoGain = ac.createGain();
+    lfo.frequency.setValueAtTime(0.4, ac.currentTime);
+    lfoGain.gain.setValueAtTime(8, ac.currentTime);
+    lfo.connect(lfoGain); lfoGain.connect(ambientNode.frequency);
+    ambientNode.type = 'sine';
+    ambientNode.frequency.setValueAtTime(55, ac.currentTime);
+    ambientGain.gain.setValueAtTime(0.08, ac.currentTime);
+    ambientNode.connect(ambientGain); ambientGain.connect(ac.destination);
+    lfo.start(); ambientNode.start();
+  }
+  function stopAmbient() {
+    if (ambientNode) { try { ambientNode.stop(); } catch(e){} ambientNode = null; }
+  }
+
+  function updateAmmoDisplay() {
+    const w = weapons[currentWeapon];
+    const ammoEl = document.getElementById('ammoDisplay');
+    const weaponEl = document.getElementById('weaponName');
+    if(ammoEl && weaponEl) {
+      weaponEl.innerText = w.name;
+      ammoEl.innerText = w.ammo === Infinity ? '∞' : w.ammo + ' / ' + w.maxAmmo;
+    }
+  }
+
+  /** Footstep tick — called from updateInput when moving */
+  let lastFootstepTime = 0;
+  function playFootstep() {
+    const ac = getAudioCtx();
+    const now = ac.currentTime;
+    if (now - lastFootstepTime < 0.32) return;
+    lastFootstepTime = now;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, now);
+    osc.frequency.exponentialRampToValueAtTime(60, now + 0.06);
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc.start(now); osc.stop(now + 0.08);
+  }
+  // =============================================================
   /** @type {HTMLCanvasElement} */
   const canvas = (document.getElementById('gameCanvas'));
   if (!canvas) throw new Error("Missing Canvas");
   const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   
   // Retro Resolution Constants
   const screenWidth = Math.floor(canvas.width);
@@ -110,7 +341,7 @@
   let isPlaying = false;
   let score = 0;
   let lastTime = 0;
-  let ZBuffer = new Float32Array(screenWidth); // Z-buffer array strictly for 1D sprite occlusion
+  let ZBuffer = new Float32Array(screenWidth);
   let flashTimeout;
   
   let currentLevelIndex = 0;
@@ -119,6 +350,23 @@
   let worldMap = [];
   let player = { x: 0, y: 0, dirX: 0, dirY: 0, planeX: 0, planeY: 0 };
   let targets = [];
+
+  // Weapon definitions
+  const weapons = [
+    { name: 'LASER', type: 'hitscan', fireRate: 200, ammo: Infinity, maxAmmo: Infinity },
+    { name: 'SHOTGUN', type: 'spread', fireRate: 800, ammo: 10, maxAmmo: 10, pellets: 6, spread: 0.4 },
+    { name: 'GRENADE', type: 'aoe', fireRate: 1200, ammo: 5, maxAmmo: 5, radius: 3.5 }
+  ];
+  let currentWeapon = 0;
+  let isReloading = false;
+  let reloadEndTime = 0;
+  let lastFireTime = 0;
+  
+  // Player state
+  let playerHP = 100;
+  let maxHP = 100;
+  let enemyProjectiles = [];
+  let killEffects = [];
 
   const levels = [
     {
@@ -221,6 +469,18 @@
      mapWidth = worldMap[0].length;
      player = JSON.parse(JSON.stringify(lvl.spawn));
      targets = JSON.parse(JSON.stringify(lvl.targets));
+     enemyProjectiles = [];
+     
+     // Reset weapons
+     weapons[0].ammo = Infinity;
+     weapons[1].ammo = 10;
+     weapons[1].maxAmmo = 10;
+     weapons[2].ammo = 5;
+     weapons[2].maxAmmo = 5;
+     currentWeapon = 0;
+     isReloading = false;
+     document.getElementById('weaponName').innerText = 'LASER';
+     updateAmmoDisplay();
      
      let targetNode = document.getElementById('targetVal');
      if(targetNode) targetNode.innerText = targets.length.toString();
@@ -236,7 +496,16 @@
 
   // Input State Map
   const keys = {};
-  window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+  window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if(isPlaying && e.key >= '1' && e.key <= '3') {
+      let idx = parseInt(e.key) - 1;
+      if(idx !== currentWeapon && weapons[idx].ammo > 0) {
+        currentWeapon = idx;
+        updateAmmoDisplay();
+      }
+    }
+  });
   window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
   
   // Pointer Lock & Shooting Integration
@@ -252,6 +521,7 @@
       if (document.pointerLockElement === canvas) {
           if (startOverlay) startOverlay.style.display = 'none';
           if (title && title.innerText !== "YOU WIN!") title.innerText = "LEVEL " + (currentLevelIndex + 1);
+          startAmbient();
           if(!isPlaying) {
               isPlaying = true;
               lastTime = performance.now();
@@ -262,6 +532,7 @@
               startOverlay.style.display = 'flex';
               if (title) title.innerText = "PAUSED";
           }
+          stopAmbient();
           isPlaying = false;
       }
   });
@@ -302,25 +573,83 @@
   }
 
   function shoot() {
-      // Screen Flash Effect logic to simulate gunfire
-      const flash = document.getElementById('screenFlash');
-      if (flash) {
-          flash.style.opacity = '1';
-          if (flashTimeout) clearTimeout(flashTimeout);
-          flashTimeout = setTimeout(() => flash.style.opacity = '0', 50);
-      }
-      
-      // Sort active targets by distance (closest first for hitscan)
+    let now = performance.now();
+    if(isReloading && now < reloadEndTime) return;
+    
+    if(isReloading && now >= reloadEndTime) {
+      let w = weapons[currentWeapon];
+      w.ammo = w.maxAmmo;
+      isReloading = false;
+      document.getElementById('reloadOverlay').classList.remove('active');
+      updateAmmoDisplay();
+    }
+    
+    let w = weapons[currentWeapon];
+    if(w.ammo <= 0 && w.ammo !== Infinity) return;
+    
+    if(now - lastFireTime < w.fireRate) return;
+    lastFireTime = now;
+    
+    if(w.ammo !== Infinity) {
+      w.ammo--;
+      updateAmmoDisplay();
+    }
+    
+    playShootSound(w.name);
+    
+    // Screen Flash Effect
+    const flash = document.getElementById('screenFlash');
+    if (flash) {
+        flash.style.opacity = '1';
+        flash.style.background = w.name === 'SHOTGUN' ? 'rgba(255,200,100,0.6)' : 'white';
+        if (flashTimeout) clearTimeout(flashTimeout);
+        flashTimeout = setTimeout(() => flash.style.opacity = '0', 50);
+    }
+    
+    let centerScreen = Math.floor(screenWidth / 2);
+    let hits = [];
+    
+    if(w.type === 'hitscan') {
+      // Laser - single target
       let sortedTargets = targets.filter(t => t.active).map(target => {
           return { ...target, dist: ((player.x - target.x)**2 + (player.y - target.y)**2) };
       }).sort((a,b) => a.dist - b.dist);
       
-      let centerScreen = Math.floor(screenWidth / 2);
-
       for(let tObj of sortedTargets) {
+        let spriteX = tObj.x - player.x;
+        let spriteY = tObj.y - player.y;
+        let invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
+        let transformX = invDet * (player.dirY * spriteX - player.dirX * spriteY);
+        let transformY = invDet * (-player.planeY * spriteX + player.planeX * spriteY);
+        
+        if(transformY > 0) { 
+            let spriteScreenX = Math.floor((screenWidth / 2) * (1 + transformX / transformY));
+            let spriteWidth = Math.abs(Math.floor(screenHeight / transformY));
+            let drawStartX = Math.floor(-spriteWidth / 2 + spriteScreenX);
+            let drawEndX = Math.floor(spriteWidth / 2 + spriteScreenX);
+            
+            if(centerScreen >= drawStartX && centerScreen <= drawEndX &&
+               (transformY < ZBuffer[centerScreen] || ZBuffer[centerScreen] === undefined) &&
+               hasLineOfSight(player.x, player.y, tObj.x, tObj.y)) {
+              hits.push(tObj);
+              break;
+            }
+        }
+      }
+    } else if(w.type === 'spread') {
+      // Shotgun - multiple spread hits
+      for(let p = 0; p < w.pellets; p++) {
+        let spreadAngle = (Math.random() - 0.5) * w.spread;
+        let spreadDirX = player.dirX * Math.cos(spreadAngle) - player.dirY * Math.sin(spreadAngle);
+        let spreadDirY = player.dirX * Math.sin(spreadAngle) + player.dirY * Math.cos(spreadAngle);
+        
+        let sortedTargets = targets.filter(t => t.active).map(target => {
+            return { ...target, dist: ((player.x - target.x)**2 + (player.y - target.y)**2) };
+        }).sort((a,b) => a.dist - b.dist);
+        
+        for(let tObj of sortedTargets) {
           let spriteX = tObj.x - player.x;
           let spriteY = tObj.y - player.y;
-          
           let invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
           let transformX = invDet * (player.dirY * spriteX - player.dirX * spriteY);
           let transformY = invDet * (-player.planeY * spriteX + player.planeX * spriteY);
@@ -331,57 +660,93 @@
               let drawStartX = Math.floor(-spriteWidth / 2 + spriteScreenX);
               let drawEndX = Math.floor(spriteWidth / 2 + spriteScreenX);
               
-              // If center crosshair intersects the drawn bounds of sprite on screen window
-              if(
-                  centerScreen >= drawStartX &&
-                  centerScreen <= drawEndX &&
-                  (transformY < ZBuffer[centerScreen] || ZBuffer[centerScreen] === undefined) &&
-                  hasLineOfSight(player.x, player.y, tObj.x, tObj.y)
-              ) {
-                  let realTarget = targets.find(t => t.x === tObj.x && t.y === tObj.y);
-                  if(!realTarget) continue;
-                  realTarget.active = false;
-                  score += 100;
-                      
-                      let scoreNode = document.getElementById('scoreVal');
-                      if (scoreNode) scoreNode.innerText = score.toString();
-                      
-                      let targetNode = document.getElementById('targetVal');
-                      if (targetNode) targetNode.innerText = targets.filter(t => t.active).length.toString();
-                      
-                      if(targets.filter(t => t.active).length === 0) {
-                          // Level complete logic
-                          const flash = document.getElementById('screenFlash');
-                          if(flash) {
-                             flash.style.opacity = '1';
-                             flash.style.background = 'rgba(0, 255, 255, 0.4)';
-                             setTimeout(() => { flash.style.opacity = '0'; flash.style.background = 'white'; }, 1000);
-                          }
-                          setTimeout(() => {
-                              // Proceed to next level
-                              if(currentLevelIndex === levels.length - 1) {
-                                  // Win state! We will unlock cursor and show win overlay
-                                  document.exitPointerLock();
-                                  isPlaying = false;
-                                  const overlay = document.getElementById('startOverlay');
-                                  if(overlay) {
-                                      overlay.style.display = 'flex';
-                                      overlay.innerHTML = '<h1 style="font-size:64px; animation: pulse 1s infinite;">YOU WIN!</h1><p style="font-size:28px; color:var(--neon-cyan);">CONGRATULATIONS!</p><p style="font-size:20px;">You cleared all the neon sectors!</p><p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO RESTART LEVEL 1</p><div id="levelSelect" style="margin-top:20px; display:flex; gap:10px;"><button onclick="event.stopPropagation(); loadLevel(0);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 1</button><button onclick="event.stopPropagation(); loadLevel(1);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 2</button><button onclick="event.stopPropagation(); loadLevel(2);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 3</button></div>';
-                                  }
-                                  loadLevel(0);
-                                  score = 0;
-                                  let scoreNode = document.getElementById('scoreVal');
-                                  if (scoreNode) scoreNode.innerText = "0";
-                              } else {
-                                  loadLevel(currentLevelIndex + 1);
-                              }
-                          }, 1500);
-                      }
-                      break; // Kill only the first (closest) valid target
-                  }
+              // Offset for spread
+              let pelletOffset = (Math.random() - 0.5) * spriteWidth * 0.5;
+              
+              if(centerScreen + pelletOffset >= drawStartX && centerScreen + pelletOffset <= drawEndX &&
+                 (transformY < ZBuffer[centerScreen] || ZBuffer[centerScreen] === undefined) &&
+                 hasLineOfSight(player.x, player.y, tObj.x, tObj.y)) {
+                if(!hits.find(h => h.x === tObj.x && h.y === tObj.y)) hits.push(tObj);
+                break;
               }
           }
+        }
       }
+    } else if(w.type === 'aoe') {
+      // Grenade - kills all targets in radius
+      let px = player.x + player.dirX * 2;
+      let py = player.y + player.dirY * 2;
+      
+      for(let t of targets) {
+        if(!t.active) continue;
+        let dist = Math.sqrt((px - t.x)**2 + (py - t.y)**2);
+        if(dist <= w.radius && hasLineOfSight(px, py, t.x, t.y)) {
+          hits.push(t);
+        }
+      }
+      
+      // Explosion visual
+      playExplosionSound();
+      const flash = document.getElementById('screenFlash');
+      if(flash) {
+        flash.style.opacity = '0.8';
+        flash.style.background = 'orange';
+        setTimeout(() => flash.style.opacity = '0', 200);
+      }
+    }
+    
+    // Process hits
+    for(let tObj of hits) {
+      let realTarget = targets.find(t => t.x === tObj.x && t.y === tObj.y);
+      if(!realTarget) continue;
+      realTarget.active = false;
+      playKillSound();
+      
+      // Add kill effect particle
+      killEffects.push({
+        x: realTarget.x,
+        y: realTarget.y,
+        startTime: performance.now(),
+        duration: 500
+      });
+      
+      score += 100;
+      
+      let scoreNode = document.getElementById('scoreVal');
+      if (scoreNode) scoreNode.innerText = score.toString();
+      
+      let targetNode = document.getElementById('targetVal');
+      if (targetNode) targetNode.innerText = targets.filter(t => t.active).length.toString();
+      
+      if(targets.filter(t => t.active).length === 0) {
+        playLevelCompleteSound();
+        const flash = document.getElementById('screenFlash');
+        if(flash) {
+           flash.style.opacity = '1';
+           flash.style.background = 'rgba(0, 255, 255, 0.4)';
+           setTimeout(() => { flash.style.opacity = '0'; flash.style.background = 'white'; }, 1000);
+        }
+        setTimeout(() => {
+            if(currentLevelIndex === levels.length - 1) {
+                document.exitPointerLock();
+                isPlaying = false;
+                saveScore('Player', score);
+                const overlay = document.getElementById('startOverlay');
+                if(overlay) {
+                    overlay.style.display = 'flex';
+                    overlay.innerHTML = '<h1 style="font-size:64px; animation: pulse 1s infinite;">YOU WIN!</h1><p style="font-size:28px; color:var(--neon-cyan);">CONGRATULATIONS!</p><p style="font-size:20px;">You cleared all the neon sectors!</p><p style="color:var(--neon-cyan); margin-top:10px;">SCORE: ' + score + '</p>' + getLeaderboardHTML() + '<p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO RESTART LEVEL 1</p><div id="levelSelect" style="margin-top:20px; display:flex; gap:10px;"><button onclick="event.stopPropagation(); loadLevel(0);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 1</button><button onclick="event.stopPropagation(); loadLevel(1);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 2</button><button onclick="event.stopPropagation(); loadLevel(2);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 3</button></div>';
+                }
+                loadLevel(0);
+                score = 0;
+                let scoreNode = document.getElementById('scoreVal');
+                if (scoreNode) scoreNode.innerText = "0";
+            } else {
+                loadLevel(currentLevelIndex + 1);
+            }
+        }, 1500);
+      }
+    }
+  }
 
 
   function isWalkable(x, y, pad = 0.2) {
@@ -404,13 +769,46 @@
       let nextY = player.y;
 
       // Register movements onto velocity axes (using generalized e.key codes)
-      if(keys['w'] || keys['arrowup']) { nextX += player.dirX * moveSpeed; nextY += player.dirY * moveSpeed; }
-      if(keys['s'] || keys['arrowdown']) { nextX -= player.dirX * moveSpeed; nextY -= player.dirY * moveSpeed; }
-      if(keys['a'] || keys['arrowleft']) { nextX -= rightX * moveSpeed; nextY -= rightY * moveSpeed; }
-      if(keys['d'] || keys['arrowright']) { nextX += rightX * moveSpeed; nextY += rightY * moveSpeed; }
+      let isMoving = false;
+      if(keys['w'] || keys['arrowup']) { nextX += player.dirX * moveSpeed; nextY += player.dirY * moveSpeed; isMoving = true; }
+      if(keys['s'] || keys['arrowdown']) { nextX -= player.dirX * moveSpeed; nextY -= player.dirY * moveSpeed; isMoving = true; }
+      if(keys['a'] || keys['arrowleft']) { nextX -= rightX * moveSpeed; nextY -= rightY * moveSpeed; isMoving = true; }
+      if(keys['d'] || keys['arrowright']) { nextX += rightX * moveSpeed; nextY += rightY * moveSpeed; isMoving = true; }
+if(isMoving) playFootstep();
 
       if(isWalkable(nextX, player.y)) player.x = nextX;
       if(isWalkable(player.x, nextY)) player.y = nextY;
+  }
+  
+  function takeDamage(amount) {
+    playerHP -= amount;
+    playDamageSound();
+    
+    // Update HP bar
+    let hpFill = document.getElementById('hpFill');
+    if(hpFill) hpFill.style.width = (playerHP / maxHP * 100) + '%';
+    
+    if(playerHP <= 0) {
+      gameOver();
+    }
+  }
+  
+  function gameOver() {
+    isPlaying = false;
+    document.exitPointerLock();
+    stopAmbient();
+    const overlay = document.getElementById('startOverlay');
+    if(overlay) {
+      overlay.style.display = 'flex';
+      overlay.innerHTML = '<h1 style="font-size:64px; color:#ff073a; animation: pulse 1s infinite;">GAME OVER</h1><p style="font-size:28px; color:var(--neon-cyan);">SCORE: ' + score + '</p><p style="color:var(--neon-magenta); margin-top:20px; font-weight:bold;">CLICK TO TRY AGAIN</p><div id="levelSelect" style="margin-top:20px; display:flex; gap:10px;"><button onclick="event.stopPropagation(); loadLevel(0);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 1</button><button onclick="event.stopPropagation(); loadLevel(1);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 2</button><button onclick="event.stopPropagation(); loadLevel(2);" style="background:transparent; border:2px solid var(--neon-cyan); color:var(--neon-cyan); padding:10px 20px; cursor:pointer; font-family:inherit; font-size:16px;">Level 3</button></div>';
+    }
+    // Reset HP for next game
+    playerHP = maxHP;
+    let hpFill = document.getElementById('hpFill');
+    if(hpFill) hpFill.style.width = '100%';
+    score = 0;
+    let scoreNode = document.getElementById('scoreVal');
+    if (scoreNode) scoreNode.innerText = "0";
   }
 
   function gameLoop(time) {
@@ -421,13 +819,13 @@
       // Update our physics and vectors
       updateInput(dt);
       
-      // --- Clear Screen for Ceil / Floor rendering ---
-      ctx.fillStyle = "#111111"; // Roof Gradient fake
+      // --- Floor & Ceiling (clean solid) ---
+      ctx.fillStyle = "#000510";
       ctx.fillRect(0, 0, screenWidth, screenHeight / 2);
-      ctx.fillStyle = "#030303"; // Floor
+      ctx.fillStyle = "#050510";
       ctx.fillRect(0, screenHeight / 2, screenWidth, screenHeight / 2);
 
-      // --- Core Raycasting Kernel (Digital Differential Analyzer Algorithm) ---
+      // --- Core Raycasting Kernel ---
       for(let x = 0; x < screenWidth; x++) {
           
           let cameraX = 2 * x / screenWidth - 1; // x-coordinate in camera space
@@ -553,6 +951,44 @@
               }
               ctx.globalAlpha = 1.0;
           }
+      }
+      
+      // --- Render Kill Effects ---
+      const now = performance.now();
+      killEffects = killEffects.filter(e => now - e.startTime < e.duration);
+      for(let effect of killEffects) {
+        let spriteX = effect.x - player.x;
+        let spriteY = effect.y - player.y;
+        let invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
+        let transformX = invDet * (player.dirY * spriteX - player.dirX * spriteY);
+        let transformY = invDet * (-player.planeY * spriteX + player.planeX * spriteY);
+        
+        if(transformY > 0) {
+          let progress = (now - effect.startTime) / effect.duration;
+          let size = Math.abs(Math.floor(screenHeight / transformY)) * (1 + progress * 2);
+          let alpha = 1 - progress;
+          
+          let spriteScreenX = Math.floor((screenWidth / 2) * (1 + transformX / transformY));
+          let drawStartX = Math.floor(spriteScreenX - size / 2);
+          let drawEndX = Math.floor(spriteScreenX + size / 2);
+          let drawStartY = Math.floor(screenHeight / 2 - size / 2);
+          let drawEndY = Math.floor(screenHeight / 2 + size / 2);
+          
+          ctx.globalAlpha = alpha;
+          ctx.strokeStyle = "#ffff00";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(spriteScreenX, screenHeight / 2, size / 2, 0, Math.PI * 2);
+          ctx.stroke();
+          
+          ctx.fillStyle = "#ff00ea";
+          for(let px = drawStartX; px < drawEndX; px += 4) {
+            for(let py = drawStartY; py < drawEndY; py += 4) {
+              if((px + py) % 8 === 0) ctx.fillRect(px, py, 3, 3);
+            }
+          }
+          ctx.globalAlpha = 1;
+        }
       }
 
       // --- Render HUD Minimap Over everything else ---
